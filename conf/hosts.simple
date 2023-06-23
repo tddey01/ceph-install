@@ -1,0 +1,6 @@
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+172.16.0.111 node-1 node-1.ceph.osk node-1.mon.ceph.osk node-1.mds.ceph.osk node-1.mgr.ceph.osk node-1.osd.ceph.osk
+172.16.0.112 node-2 node-2.ceph.osk node-2.mon.ceph.osk node-2.mds.ceph.osk node-2.mgr.ceph.osk node-2.osd.ceph.osk
+172.16.0.113 node-3 node-3.ceph.osk node-3.mon.ceph.osk node-3.mds.ceph.osk node-3.mgr.ceph.osk node-3.osd.ceph.osk
+

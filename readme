@@ -1,0 +1,12 @@
+遵循木兰开源1.0协议
+开源地址:https://gitee.com/fastshadow/ceph-binary-deploy.git
+开发者：
+1,填写ceph_cluster.env全局配置环境文件
+2，编写conf/hosts文件
+3，按需编写conf/ceph.conf文件
+4、编写ceph-osd.map文件
+5，执行pre-system-init.sh文件
+6、执行ceph-deploy-all.sh文件
+
+
+0，摧毁集群执行clean_all_ceph_cluster.sh

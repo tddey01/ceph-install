@@ -1,0 +1,39 @@
+127.0.0.1 localhost
+
+
+#mgmt hostname不能带下划线
+172.33.6.254 deploy.mgmt.osk deploy deploy.svc.osk
+172.33.6.1   node-1.mgmt.osk node-1
+172.33.6.2   node-2.mgmt.osk node-2
+172.33.6.3   node-3.mgmt.osk node-3
+172.33.6.4   node-4.mgmt.osk node-4
+172.33.6.5   node-5.mgmt.osk node-5
+172.33.6.6   node-6.mgmt.osk node-6
+172.33.6.7   node-7.mgmt.osk node-7
+172.33.6.8   node-8.mgmt.osk node-8
+172.33.6.9   node-9.mgmt.osk node-9
+
+
+
+
+
+#storagepub
+172.33.7.4  node-4.ceph.osk node-4.mon.ceph.osk node-4.mds.ceph.osk node-4.mgr.ceph.osk node-4.osd.ceph.osk
+172.33.7.5  node-5.ceph.osk node-5.mon.ceph.osk node-5.mds.ceph.osk node-5.mgr.ceph.osk node-5.osd.ceph.osk
+172.33.7.6  node-6.ceph.osk node-6.mon.ceph.osk node-6.mds.ceph.osk node-6.mgr.ceph.osk node-6.osd.ceph.osk
+172.33.7.1  node-1.ceph.osk node-1.client.ceph.osk
+172.33.7.2  node-2.ceph.osk node-2.client.ceph.osk
+172.33.7.3  node-3.ceph.osk node-3.client.ceph.osk
+172.33.7.7  node-7.ceph.osk node-7.client.ceph.osk
+172.33.7.8  node-8.ceph.osk node-8.client.ceph.osk
+172.33.7.9  node-9.ceph.osk node-9.client.ceph.osk
+
+#storage
+#192.168.204.17
+#192.168.204.18
+#192.168.204.19
+#192.168.204.20
+#192.168.204.21
+
+
+

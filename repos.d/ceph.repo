@@ -1,0 +1,24 @@
+[Ceph]
+name=Ceph packages for $basearch
+baseurl=https://mirrors.aliyun.com/ceph/rpm-quincy/el8/$basearch
+enabled=1
+gpgcheck=0
+type=rpm-md
+gpgkey=https://mirrors.aliyun.com/ceph/rpm-quincy/keys/release.asc
+
+[Ceph-noarch]
+name=Ceph noarch packages
+baseurl=https://mirrors.aliyun.com/ceph/rpm-quincy/el8/noarch
+enabled=1
+gpgcheck=0
+type=rpm-md
+gpgkey=https://mirrors.aliyun.com/ceph/rpm-quincy/keys/release.asc
+
+[ceph-source]
+name=Ceph source packages
+baseurl=https://mirrors.aliyun.com/ceph/rpm-quincy/el8/SRPMS
+enabled=1
+gpgcheck=0
+type=rpm-md
+gpgkey=https://mirrors.aliyun.com/ceph/rpm-quincy/keys/release.asc
+

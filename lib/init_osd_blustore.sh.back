@@ -1,0 +1,547 @@
+#!/bin/bash
+
+Deploy_Path=`cd $(dirname $0); pwd -P`
+
+source $Deploy_Path/ceph_cluster.env
+source $Deploy_Path/lib/init_ceph_lib.sh
+
+load_bcache_module(){
+    touch /etc/modules-load.d/bcache.conf
+    echo 'bcache' > /etc/modules-load.d/bcache.conf
+    modprobe bcache
+}
+
+centos_enabled_bcache_module(){
+    
+    echo "#！/bin/sh" > /etc/sysconfig/modules/bcache.modules
+    echo "/sbin/depmod -A" >> /etc/sysconfig/modules/bcache.modules
+    echo "/sbin/modprobe -f bcache" >> /etc/sysconfig/modules/bcache.modules
+    chmod 755 /etc/sysconfig/modules/bcache.modules
+}
+
+centos_install_bcache_tools(){
+    #bash $Deploy_Path/bcache/install_bcache-tools.sh & wait
+    #modprobe -f bcache
+    mkdir -p /usr/share/initramfs-tools/hooks/
+    mkdir -p /usr/lib/initcpio/install/
+    mkdir -p /lib/dracut/modules.d/90bcache/
+
+    cp -f $Deploy_Path/bcache/make-bcache /usr/sbin/make-bcache && chmod 755 /usr/sbin/make-bcache
+    cp -f $Deploy_Path/bcache/bcache-super-show /usr/sbin/bcache-super-show && chmod 755 /usr/sbin/bcache-super-show
+    cp -f $Deploy_Path/bcache/probe-bcache /lib/udev/probe-bcache && chmod 755 /lib/udev/probe-bcache
+    cp -f $Deploy_Path/bcache/bcache-register /lib/udev/bcache-register && chmod 755 /lib/udev/bcache-register
+    cp -f $Deploy_Path/bcache/69-bcache.rules /lib/udev/rules.d/69-bcache.rules  && chmod 644 /lib/udev/rules.d/69-bcache.rules
+    cp -f $Deploy_Path/bcache/hook /usr/share/initramfs-tools/hooks/bcache && chmod 755 /usr/share/initramfs-tools/hooks/bcache
+    cp -f $Deploy_Path/bcache/install /usr/lib/initcpio/install/bcache && chmod 755 /usr/lib/initcpio/install/bcache
+    cp -f $Deploy_Path/bcache/module-setup.sh /lib/dracut/modules.d/90bcache/module-setup.sh && chmod 755 /lib/dracut/modules.d/90bcache/module-setup.sh
+}
+
+ubuntu_install_bcache_tools(){
+    apt-get install -yq bcache-tools
+}
+
+centos_install_bcache(){
+    load_bcache_module
+    #centos_enabled_bcache_module
+    centos_install_bcache_tools
+}
+
+ubuntu_install_bcache(){
+    load_bcache_module
+    ubuntu_install_bcache_tools
+}
+
+make_bcache(){
+    partprobe & wait
+    sleep 10
+    if [ -z "$BCache_Part_Path" ];then
+        if lsof $BCache_Part_Path ;then
+            echo "$BCache_Part_Path device is busy!"
+            exit 1
+        fi
+    else
+        echo "BCache_Part_Path is null!"
+        exit 1
+    fi
+    make-bcache -B $Data_Disk_Path -C $BCache_Part_Path -w $BCache_Block_Size -b $BCache_Bucket_Size --writeback --wipe-bcache 
+    if [ "$?" != "0" ];then
+        echo "make bcache faild!  $Data_Disk_Path $BCache_Part_Path"
+    fi
+    touch /var/lib/ceph/osd-mapping/$mapping_file.bcache.info
+    bcache-super-show $Data_Disk_Path > /var/lib/ceph/osd-mapping/$mapping_file.bcache.info
+    bcache-super-show $BCache_Part_Path >> /var/lib/ceph/osd-mapping/$mapping_file.bcache.info
+}
+
+
+wipe_osd_device(){
+    if [ -z $OSD_Device ];then
+        if lsof $OSD_Device ;then
+            lsof $OSD_Device >> /tmp/lsof.log
+            exit 1
+        fi
+    else
+        echo "OSD_Device is null!"
+        exit 1
+    fi
+
+    if [ -b $OSD_Device ];then
+        #wipefs -a $OSD_Device && sync 废弃
+        dd if=/dev/zero of=$OSD_Device bs=4M count=8 && sync
+    else
+        echo "OSD_Device $OSD_Device device not found!"
+	exit 1
+    fi
+
+    partprobe & wait
+    lsblk
+}
+
+
+gen_osd_id_range(){
+    Node_Number=`hostname -s|awk -F'-' '{print $2}'`
+    OSD_ID_End=$(($Node_Number * $Node_OSDs - 1))
+    OSD_ID_Start=$(($OSD_ID_End + 1 - $Node_OSDs))
+}
+
+mkdir_osd_mapping(){
+    if [ -d /var/lib/ceph/osd-mapping ];then
+        echo "The dirctor /var/lib/ceph/osd-mapping is already exist!"
+    else
+        mkdir /var/lib/ceph/osd-mapping 
+    fi
+}
+
+create_disk_part(){
+    partprobe & wait 
+    if [ -z "$Cache_Device_by_path" ];then
+        while lsof $Cache_Device_by_path;do
+            sleep 2
+        done & wait
+	#分区起始位置8M空间数据置零，预防该位置已有某些文件系统时触发udev事件，导致分区被busy
+	#注意：此处parted的单位换算是按1000*1000计算，不是1024*1024计算，所以bs的单位必须是M，不能是MB,SEEK也要按照1000计算
+	SEEK=$(($START*1000))
+        dd if=/dev/zero of=$Cache_Disk bs=1MB count=8 seek=$SEEK
+        parted -s $Cache_Device_by_path mkpart primary "$START"GB "$END"GB && sync
+    else
+        echo "Cache_Device_by_path $Cache_Device_by_path is null!"
+        exit 1
+    fi
+    #parted -l $Cache_Device_by_path
+    partprobe & wait
+    sleep 3
+}
+
+osd_mapping(){
+cat > /var/lib/ceph/osd-mapping/osd.$osd_id <<- EOF
+#!/bin/bash
+OSD_ID=$osd_id
+Data_Disk_Path=$Data_Device_Path 
+Block_DB_Part_Path=$Block_DB_Part_Path 
+Block_WAL_Part_Path=$Block_WAL_Part_Path 
+BCache_Part_Path=$Block_BCache_Part_Path
+BCache_Part=$Block_BCache_Part
+Cache_Disk_Path=$Cache_Device_by_path
+EOF
+}
+
+cache_disks_mklabel(){
+
+
+}
+
+
+cache_disk_mkparts(){
+
+
+}
+
+cache_disks_mkparts(){
+
+    gen_osd_id_range
+    mkdir_osd_mapping
+
+    #获取$Cluster_Name-osd.map当前节点上缓存盘列表
+    OSD_Cache_Devices=`sed -n '/^'"$Node_FQDN"' .*/p' $Deploy_Path/ceph-osd.map|egrep -v "^$|^#" |awk '{print $2}'|awk -F':' '{print $1}'`
+    echo OSD_Cache_Devices $OSD_Cache_Devices
+
+    #初始化osd id
+    osd_id=$OSD_ID_Start
+
+    #循环读取缓存盘列表中的每一个缓存盘并操作
+    for Cache_Disk in $OSD_Cache_Devices;do
+
+
+        #获取当前osd数据盘列表
+	OSD_Data_Devices=`cat $Deploy_Path/ceph-osd.map|egrep -v "^#|^$"|grep -w $Cache_Disk |sed -n '/^'"$Node_FQDN"' .*/ s/'"$Node_FQDN"' *//p'|awk -F':' '{print $2}'`
+        #通过当前缓存盘盘符获取当前缓存盘的disk by-path路径
+        Cache_Device_by_path="/dev/disk/by-path/`ls -l /dev/disk/by-path/|grep -w $Cache_Disk|awk '{print $9}'`"
+        #清空缓存盘分区表
+        OSD_Device="/dev/$Cache_Disk"
+        wipe_osd_device
+        #重新加载硬盘分区表
+        #修改设备属主属组为ceph:ceph
+        chown -h ceph:ceph $OSD_Device
+        #为当前缓存盘创建gpt分区表
+        parted -s $Cache_Device_by_path mklabel gpt
+        #设置当前缓存盘上第一块分区的起始地址偏移量，单位为MB
+
+        PART=0
+        START=1
+        #循环读取当前缓存盘所关联的osd数据盘列表，每一个数据盘需要在缓存盘上创建3个分区，用于bluestore的block.db,block.wal以及数据盘bcache使用
+        for Data_Disk in $OSD_Data_Devices;do
+            
+            OSD_Device="/dev/$Data_Disk"
+            wipe_osd_device
+
+            Data_Device_Path="/dev/disk/by-path/`ls -l /dev/disk/by-path/|grep -w $Data_Disk|awk '{print $9}'`"
+	    #创建bluestore block.db分区
+	    #通过读取ceph_cluster.env中的Block_DB_Size变量，计算出block.db分区的起始偏移容量和结尾偏移容量
+	    END=$(($START + $Block_DB_Size))
+            create_disk_part
+	
+	    #获取block.db分区的disk by-path保存到变量Block_DB_Part
+            PART=$(($PART+1))
+	    Block_DB_Part_Path=$Cache_Device_by_path-part$PART
+	    Block_DB_Part=$Cache_Disk$PART
+        
+	    OSD_Device="/dev/$Block_DB_Part"
+            wipe_osd_device
+
+            #创建bluestore block.wal分区
+            #通过读取ceph_cluster.env中的Block_WAL_Size变量，计算出block.db分区的起始偏移容量和结尾偏移容量
+	    START=$END
+            END=$(($START + $Block_WAL_Size))
+	    create_disk_part
+
+
+	    #获取block.wal分区的disk by-path保存到变量Block_WAL_Part
+	    PART=$(($PART+1))
+            Block_WAL_Part_Path=$Cache_Device_by_path-part$PART
+            Block_WAL_Part="$Cache_Disk$PART"
+
+	    OSD_Device="/dev/$Block_WAL_Part"
+	    wipe_osd_device
+
+	    if [ "$Enable_BCache"x == "true"x ];then
+                #创建bluestore block.wal分区
+                #通过读取ceph_cluster.env中的Block_BCache_Size变量，计算出bcache分区的起始偏移容量和结尾偏移容量
+	        START=$END
+                END=$(($START + $BCache_Size))
+	        create_disk_part
+
+	        #获取bcache分区的disk by-path保存到变量Block_BCache_Part
+                PART=$(($PART+1))
+                Block_BCache_Part_Path=$Cache_Device_by_path-part$PART
+	        Block_BCache_Part="$Cache_Disk$PART"
+
+	        OSD_Device="/dev/$Block_BCache_Part"
+	        wipe_osd_device
+
+                #计算出下一个数据盘bluestore block.db分区的起始偏移容量
+	        START=$END
+
+                #将osd映射表重定向至文件
+		osd_mapping
+
+                #计算出下一个osd的id
+	        osd_id=$(($osd_id + 1))
+            fi
+        
+        done
+    done
+}
+
+
+
+request_new_osd() {
+    ceph --cluster $Cluster_Name --name client.bootstrap-osd --keyring /var/lib/ceph/bootstrap-osd/$Cluster_Name.keyring  osd new $OSD_UUID $OSD_ID
+}
+
+mkdir_osd_pwd(){
+    if [ ! -d "/var/lib/ceph/osd/$Cluster_Name-$OSD_ID" ];then
+        mkdir /var/lib/ceph/osd/$Cluster_Name-$OSD_ID
+    fi
+}
+
+mount_osd_pwd_for_systemd(){
+    systemctl enable var-lib-ceph-osd-ceph\\x2d$OSD_ID.mount
+    systemctl start var-lib-ceph-osd-ceph\\x2d$OSD_ID.mount
+}
+
+mount_osd_pwd_for_fstab(){
+    mount -t tmpfs tmpfs /var/lib/ceph/osd/$Cluster_Name-$OSD_ID
+}
+
+copy_mount_unit_to_systemd(){
+    sed -i "s#^Where.*#Where=/var/lib/ceph/osd/$Cluster_Name-$OSD_ID#g" lib/ceph-osd.mount
+    cp -f lib/ceph-osd.mount /usr/lib/systemd/system/var-lib-ceph-osd-ceph\\x2d$OSD_ID.mount
+}
+
+write_mount_tmpfs_to_fstab(){
+    echo "tmpfs /var/lib/ceph/osd/$Cluster_Name-$OSD_ID tmpfs default 0 0" >> /etc/fstab
+}
+
+copy_osd_prestart_scripts(){
+    cp -f lib/ceph-osd-prestart.sh /usr/libexec/ceph/
+    chmod -R +x /usr/libexec/ceph
+}
+
+chown_osd_device(){
+    if [ -z "$Data_Disk_Path" ]; then
+        echo '$Data_Disk_Path is null!'
+        exit 1
+    else
+        if [ -h "$Data_Disk_Path" ];then
+            echo Data_Disk_Path $Data_Disk_Path
+            chown -h ceph:ceph $Data_Disk_Path
+        else
+            echo "Data_Disk_Path $Data_Disk_Path is not symbolic link!"
+            exit 1
+        fi
+    fi
+    if [ -z "$Data_Disk" ]; then
+        echo '$Data_Disk is null!'
+        exit 1
+    else
+        if [ -b "/dev/$Data_Disk" ];then
+            echo Data_Disk $Data_Disk
+            chown -R ceph:ceph /dev/$Data_Disk
+        else
+            echo "Data_Disk $Data_Disk is not block device!"
+            exit 1
+        fi
+    fi
+    if [ -z "$Block_DB_Part_Path" ]; then
+        echo '$Block_DB_Part_Path is null!'
+        exit 1
+    else
+        if [ -h "$Block_DB_Part_Path" ];then
+            echo Block_DB_Part_Path $Block_DB_Part_Path
+            chown -h ceph:ceph $Block_DB_Part_Path
+        else
+            echo "Block_DB_Part_Path $Block_DB_Part_Path is not symbolic link!"
+            exit 1
+        fi
+    fi
+    if [ -z "$Block_DB_Part" ]; then
+        echo '$Block_DB_Part is null!'
+        exit 1
+    else
+        if [ -b "/dev/$Block_DB_Part" ];then
+            echo Block_DB_Part $Block_DB_Part
+            chown -R ceph:ceph /dev/$Block_DB_Part
+        else
+            echo "Block_DB_Part $Block_DB_Part is not block device!"
+            exit 1
+        fi
+    fi
+    if [ -z "$Block_WAL_Part_Path" ]; then
+        echo '$Block_WAL_Part_Path is null!'
+        exit 1
+    else
+        if [ -h "$Block_WAL_Part_Path" ]; then
+            echo Block_WAL_Part_Path $Block_WAL_Part_Path
+            chown -h ceph:ceph $Block_WAL_Part_Path
+        else
+            echo "Block_WAL_Part_Path $Block_WAL_Part_Path is not symbolic link!"
+            exit 1
+        fi	    
+    fi
+    if [ -z "$Block_WAL_Part" ]; then
+        echo '$Block_WAL_Part is null!'
+        exit 1
+    else
+        if [ -b "/dev/$Block_WAL_Part" ]; then
+            echo Block_WAL_Part $Block_WAL_Part
+            chown -R ceph:ceph /dev/$Block_WAL_Part
+        else
+            echo "Block_WAL_Part $Block_WAL_Part is not block device!"
+            exit 1
+        fi
+    fi
+
+    if [ "$Enable_BCache"x == "true"x ];then
+        if [ -z "$BCache_Part_Path" ]; then
+            echo '$BCache_Part_Path is null!'
+            exit 1
+        else
+            if [ -h "$BCache_Part_Path" ]; then
+                echo BCache_Path $BCache_Part_Path
+                chown -h ceph:ceph $BCache_Part_Path
+            else
+                echo "BCache_Path $BCache_Part_Path is not symbolic link!"
+                exit 1
+            fi
+	fi
+        if [ -z "$BCache_Part" ]; then
+            echo '$BCache_Part is null!'
+            exit 1
+        else
+            if [ -b "/dev/$BCache_Part" ]; then
+                echo BCache_Part $BCache_Part
+                chown -R ceph:ceph /dev/$BCache_Part
+            else
+                echo "BCache_Part $BCache_Part is not block device!"
+                exit 1
+            fi
+        fi
+        if [ -z "$BCache_Device" ]; then
+            echo '$BCache_Device is null!'
+            exit 1 
+        else
+            echo BCache_Device $BCache_Device
+            portprobe
+            if [ -b "$BCache_Device" ];then
+                while lsof $BCache_Device;do
+                    sleep 10
+                done 
+                chown -h ceph:ceph $BCache_Device
+            else
+  	        echo "$BCache_Device not found!"
+                exit 1
+            fi
+        fi
+    fi
+}
+link_data_dev_to_osd_pwd(){
+    if [ "$Enable_BCache"x == "true"x ];then
+        ln -s $BCache_Device /var/lib/ceph/osd/$Cluster_Name-$OSD_ID/block
+    else
+        ln -s $Data_Disk_Path /var/lib/ceph/osd/$Cluster_Name-$OSD_ID/block
+    fi
+}
+bootstrap_osd_get_monmap(){
+    ceph --cluster $Cluster_Name --name client.bootstrap-osd --keyring /var/lib/ceph/bootstrap-osd/$Cluster_Name.keyring mon getmap -o /var/lib/ceph/osd/$Cluster_Name-$OSD_ID/activate.monmap
+}
+create_osd_keyring(){
+    ceph-authtool /var/lib/ceph/osd/$Cluster_Name-$OSD_ID/keyring --create-keyring --name osd.$OSD_ID --add-key $OSD_Key
+}
+chown_osd_pwd(){
+    chown -R ceph:ceph /var/lib/ceph/osd/$Cluster_Name-$OSD_ID
+}
+init_osd(){
+    sudo -u ceph ceph-osd --cluster $Cluster_Name --conf /etc/ceph/$Cluster_Name.conf --osd-objectstore bluestore --mkfs -i $OSD_ID --monmap /var/lib/ceph/osd/$Cluster_Name-$OSD_ID/activate.monmap --keyfile - --bluestore-block-wal-path $Block_WAL_Path --bluestore-block-db-path $Block_DB_Path --osd-data /var/lib/ceph/osd/$Cluster_Name-$OSD_ID --osd-uuid $OSD_UUID --setuser ceph --setgroup ceph
+}
+
+check_osd_data_disk(){
+    ceph-bluestore-tool show-label --dev $BCache_Device
+}
+
+#按照自定义集群名称修改osd的systemd unit，默认集群名为ceph
+modify_osd_systemd_unit() {
+    deb_name=`ls -l /var/cache/apt/archives/|egrep ceph-osd*.deb`
+    #OSD_Service_File=`rpm -ql ceph-osd|grep -w 'ceph-osd@.service'`
+    OSD_Service_File=`dpkg -c $deb_name|grep -w 'ceph-osd@.service'`
+    Service_Path=`dirname $OSD_Service_File`
+    Source_Cluster=`sed -n 's/Environment=CLUSTER=//p' $OSD_Service_File`
+    if [ "$Source_Cluster"x == "$Cluster_Name"x ];then
+        echo "当前ceph cluster name无需修改。"
+    else
+        cp -a -f $OSD_Service_File $Service_Path/$Cluster_Name-ceph-osd@.service
+        sed -i "s/Environment=CLUSTER=.*/Environment=CLUSTER=$Cluster_Name/g" $Service_Path/$Cluster_Name-ceph-osd@.service
+    fi
+}
+
+add_env_file_to_osd_systemd_unit(){
+    if ! grep -w 'osd-mapping' /usr/lib/systemd/system/ceph-osd@.service;then
+        sed -i '/^EnvironmentFile=-\/etc\/default\/ceph/a\EnvironmentFile=-\/var\/lib\/ceph\/osd-mapping\/osd.\%i' /usr/lib/systemd/system/ceph-osd@.service
+    fi
+}
+
+#启动ceph-osd服务，并设置服务自启动
+start_osd_service() {
+    if [ "$Cluster_Name"x == "ceph"x ];then
+        systemctl daemon-reload && systemctl start ceph-osd@$OSD_ID && systemctl enable ceph-osd@$OSD_ID
+    else
+        systemctl daemon-reload && systemctl start $Cluster_Name-ceph-osd@$OSD_ID && systemctl enable $Cluster_Name-ceph-osd@$OSD_ID
+    fi
+}
+
+
+
+
+shell_make_exclusive_bluestore_osd_step(){
+    request_new_osd
+    mkdir_osd_pwd
+    copy_mount_unit_to_systemd
+    mount_osd_pwd_for_systemd
+    #为了新版操作系统使用规范，弃用fstab挂载方式
+    #mount_osd_pwd_for_fstab
+    #write_mount_tmpfs_to_fstab
+    if [ "$Enable_BCache"x == "true"x ];then
+        make_bcache
+    fi
+    chown_osd_device
+    link_data_dev_to_osd_pwd
+    bootstrap_osd_get_monmap
+    create_osd_keyring
+    chown_osd_pwd
+    init_osd
+    check_osd_data_disk
+    copy_osd_prestart_scripts
+    add_env_file_to_osd_systemd_unit
+    #弃用同一套硬件部署多套ceph集群功能
+    #modify_osd_systemd_unit
+    start_osd_service
+}
+make_exclusive_bluestore_osd(){
+    if [ -e "/etc/ceph/$Cluster_Name.conf" ];then
+        echo "/etc/ceph/$Cluster_Name.conf文件已存在！"
+    else
+        get_ceph_conf
+    fi
+    if [ -e "/etc/ceph/$Cluster_Name.client.admin.keyring" ];then
+        echo "/etc/ceph/$Cluster_Name.client.admin.keyring文件已存在！"
+    else
+        get_client_admin_keyring
+    fi
+    if [ -e "/var/lib/ceph/bootstrap-osd/$Cluster_Name.keyring" ];then
+        echo "/var/lib/ceph/bootstrap-osd/$Cluster_Name.keyring文件已存在！"
+    else
+        get_bootstrap_osd_keyring
+    fi
+
+    if [ "$Enable_BCache"x == "true"x ];then
+        if [ "$OS_Type"x == ubuntux ];then
+            ubuntu_install_bcache
+        elif [ "$OS_Type"x == centosx ];then
+            centos_install_bcache
+        elif [ "$OS_Type"x == opencloudosx ];then
+            centos_install_bcache
+        else
+            echo "OS_Type is not supported!"
+            exit 1
+        fi
+        mkdir_osd_mapping
+        cache_disks_mkparts
+    fi
+
+    BCache_Number=0
+
+    OSD_Mappings=`ls /var/lib/ceph/osd-mapping/|grep -v bcache`
+    for mapping_file in $OSD_Mappings;do
+        source /var/lib/ceph/osd-mapping/$mapping_file
+	Block_DB_by_path=`echo $Block_DB_Part_Path|awk -F'/' '{print $NF}'`
+	Block_WAL_by_path=`echo $Block_WAL_Part_Path|awk -F'/' '{print $NF}'`
+
+	if [ "$Enable_BCache"x == "true"x ];then
+	    BCache_by_path=`echo $BCache_Part_Path|awk -F'/' '{print $NF}'`
+            BCache_Device="/dev/bcache$BCache_Number"
+	    echo "BCache_Device=$BCache_Device" >> /var/lib/ceph/osd-mapping/$mapping_file
+        fi
+
+        OSD_Key=`ceph-authtool --gen-print-key`
+        OSD_UUID=`uuidgen`
+        OSD_ID=`echo $mapping_file|awk -F'.' '{print $2}'`	
+	
+        shell_make_exclusive_bluestore_osd_step
+	BCache_Number=$(( $BCache_Number + 1))
+        if [ "$Enable_BCache"x == "true"x ];then
+            echo $BCache_UUID > /var/lib/ceph/osd-mapping/$mapping_file.bcache.info
+	fi
+    done
+
+}
+create_osd(){
+    make_exclusive_bluestore_osd
+}

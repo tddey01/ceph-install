@@ -1,0 +1,16 @@
+#hostname cache_disk:data_disk1 data_disk2 data_disk3 ...
+node-4.mgmt.osk sdl:sda sdb sdc sdd sde sdf
+node-4.mgmt.osk sds:sdg sdh sdi sdj sdk sdm
+node-4.mgmt.osk sdt:sdn sdo sdp sdq sdr sdu
+node-4.mgmt.osk sdy:sdv sdw sdx sdz sdaa sdab
+node-4.mgmt.osk sdah:sdac sdad sdae sdaf sdag sdai
+node-5.mgmt.osk sdj:sda sdb sdc sdd sde sdf
+node-5.mgmt.osk sdab:sdg sdh sdi sdk sdl sdm
+node-5.mgmt.osk sdah:sdn sdo sdp sdq sdr sds
+node-5.mgmt.osk sdai:sdt sdu sdv sdw sdx sdy
+node-5.mgmt.osk sdaj:sdz sdaa sdac sdad sdae sdaf
+node-6.mgmt.osk sda:sdd sdg sdh sdi sdj sdk 
+node-6.mgmt.osk sdb:sdl sdm sdn sdo sdp sdq
+node-6.mgmt.osk sdc:sdr sds sdt sdu sdv sdw
+node-6.mgmt.osk sde:sdx sdy sdz sdaa sdab sdac
+node-6.mgmt.osk sdf:sdad sdae sdaf sdag sdah sdai
